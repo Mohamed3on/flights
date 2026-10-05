@@ -2,7 +2,7 @@
 
 import unittest
 
-from fast_flights import FlightQuery, create_query
+from fast_flights import FlightQuery, Passengers, create_query
 from fast_flights.pb.flights_pb2 import Emissions, Info
 
 
@@ -105,6 +105,18 @@ class QueryingTests(unittest.TestCase):
 
         self.assertEqual(query.params()["tfu"], "EgQIABABIgA")
         self.assertIn("&tfu=EgQIABABIgA", query.url())
+
+    # [AI CONTENT]
+    def test_infant_types_match_google_encoding(self) -> None:
+        # A Google Flights share link for 2 adults, 1 child and 1 infant on lap
+        # encodes its passengers as [1, 1, 2, 3]; an infant in seat is 4.
+        query = create_query(
+            flights=[FlightQuery(date="2099-01-02", from_airport="BER", to_airport="BKK")],
+            passengers=Passengers(adults=2, children=1, infants_on_lap=1),
+        )
+        self.assertEqual(list(Info.FromString(query.to_bytes()).passengers), [1, 1, 2, 3])
+        self.assertEqual(Passengers(infants_in_seat=1).pb(), [4])
+    # [/AI CONTENT]
 
 
 if __name__ == "__main__":

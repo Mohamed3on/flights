@@ -35,8 +35,8 @@ class Passenger(int, Enum):
     # UNKNOWN_PASSENGER = 0
     ADULT = 1
     CHILD = 2
-    INFANT_IN_SEAT = 3
-    INFANT_ON_LAP = 4
+    INFANT_ON_LAP = 3
+    INFANT_IN_SEAT = 4
 
 class Emissions(int, Enum):
     # UNKNOWN_EMISSIONS = 0
