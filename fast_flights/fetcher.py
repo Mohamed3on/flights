@@ -7,6 +7,8 @@ from .parser import ResultList, parse
 from .querying import Query
 
 URL = "https://www.google.com/travel/flights"
+# EU/EEA IPs get Google's consent page instead of results unless this SOCS cookie is set.
+CONSENT_COOKIE = "CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AxGgJlbiACGgYIgJnPpwY"
 
 
 T = TypeVar("T")
@@ -76,6 +78,7 @@ def fetch_flights_html(
             proxy=proxy,
             cookie_store=True,
         )
+        client.set_cookies("https://www.google.com", {"SOCS": CONSENT_COOKIE})
 
         if isinstance(q, Query):
             params = q.params()
