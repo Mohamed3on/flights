@@ -232,7 +232,9 @@ def create_query(
         max_stops (optional): Set the maximum stops for every flight query, if present.
         max_price: Maximum price in the selected currency.
         carry_on_bags: Carry-on bags whose estimated fees should be included.
-        checked_bags: Checked bags whose estimated fees should be included.
+        checked_bags: Checked bags whose estimated fees should be included. Google
+            ignores this where its web UI has no checked-bag filter, as for searches
+            from Germany.
         hide_separate_and_self_transfer: Hide separate-ticket and self-transfer
             itineraries.
         exclude_basic_economy: Exclude basic economy fares.

@@ -66,6 +66,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--infants-lap", type=int, default=0, help="under 2, on a lap")
     p.add_argument("--infants-seat", type=int, default=0, help="under 2, in their own seat")
     p.add_argument("--max-stops", type=int)
+    p.add_argument(
+        "--carry-on", action="store_true",
+        help="include the fee for one carry-on bag per passenger",
+    )
     p.add_argument("-c", "--currency", default="EUR")
     p.add_argument(
         "-n", "--limit", type=int, default=20, help="rows to print, 0 for all (default: 20)"
@@ -102,6 +106,7 @@ def main(argv: list[str] | None = None) -> None:
                 language="en-US",
                 currency=currency,
                 max_stops=args.max_stops,
+                carry_on_bags=int(args.carry_on),
             )
         )
     except Exception as e:
