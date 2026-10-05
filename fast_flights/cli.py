@@ -54,10 +54,17 @@ def main(argv: list[str] | None = None) -> None:
         help="return date; prices become round-trip totals",
     )
     p.add_argument(
+        "--leg", nargs=3, action="append", metavar=("FROM", "TO", "DATE"),
+        help="add a multi-city leg (repeatable); prices become trip totals",
+    )
+    p.add_argument(
         "-s", "--seat", default="economy",
         choices=["economy", "premium-economy", "business", "first"],
     )
     p.add_argument("-a", "--adults", type=int, default=1)
+    p.add_argument("--children", type=int, default=0, help="ages 2-11")
+    p.add_argument("--infants-lap", type=int, default=0, help="under 2, on a lap")
+    p.add_argument("--infants-seat", type=int, default=0, help="under 2, in their own seat")
     p.add_argument("--max-stops", type=int)
     p.add_argument("-c", "--currency", default="EUR")
     p.add_argument(
@@ -65,6 +72,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     p.add_argument("--json", action="store_true", help="print every result as JSON")
     args = p.parse_args(argv)
+    if args.return_date and args.leg:
+        p.error("use either --return or --leg, not both")
 
     origin, destination = args.origin.upper(), args.destination.upper()
     currency = args.currency.upper()
@@ -73,14 +82,23 @@ def main(argv: list[str] | None = None) -> None:
         legs.append(
             FlightQuery(date=args.return_date, from_airport=destination, to_airport=origin)
         )
+    legs += [
+        FlightQuery(date=d, from_airport=a.upper(), to_airport=b.upper())
+        for a, b, d in args.leg or []
+    ]
 
     try:
         results = get_flights(
             create_query(
                 flights=legs,
                 seat=args.seat,
-                trip="round-trip" if args.return_date else "one-way",
-                passengers=Passengers(adults=args.adults),
+                trip="multi-city" if args.leg else "round-trip" if args.return_date else "one-way",
+                passengers=Passengers(
+                    adults=args.adults,
+                    children=args.children,
+                    infants_in_seat=args.infants_seat,
+                    infants_on_lap=args.infants_lap,
+                ),
                 language="en-US",
                 currency=currency,
                 max_stops=args.max_stops,

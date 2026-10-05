@@ -25,7 +25,8 @@ $ pip install fast-flights
 > [!NOTE]
 > **This fork** tracks upstream `dev` and adds:
 > - a consent cookie, so searches from EU/EEA IPs return flights instead of Google's consent page
-> - a `flights` command: `flights BER LHR 2026-11-15`, `flights BER LON 2026-11-20 -r 2026-11-27` (see `flights -h`)
+> - results for searches Google leaves out of the page (multi-city, several passengers, some long-haul routes), fetched the way the web client does
+> - a `flights` command: `flights BER LHR 2026-11-15`, `flights BER LON 2026-11-20 -r 2026-11-27`, multi-city with `--leg DAD BER 2027-03-20`, and `--children`/`--infants-lap`/`--infants-seat` (see `flights -h`)
 >
 > Install the CLI with `uv tool install git+https://github.com/Mohamed3on/flights`, or the library with `pip install git+https://github.com/Mohamed3on/flights`.
 

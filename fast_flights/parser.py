@@ -51,15 +51,18 @@ def parse_js(js: str):
     if data.endswith("errorHasStatus: true"):
         raise FlightsNotFound("no flights found; received error")
 
-    payload = json.loads(data)
+    return parse_payload(json.loads(data))
 
+
+def parse_payload(payload: list) -> ResultList:
+    """Parse a results payload, from the page or from a GetShoppingResults response."""
     alliances = []
     airlines = []
 
-    (alliances_data, airlines_data) = (
-        payload[7][1][0],
-        payload[7][1][1],
-    )
+    meta = payload[7][1]
+    alliances_data = meta[0]
+    # Google omits the airline list when the payload carries no results.
+    airlines_data = meta[1] if len(meta) > 1 else []
 
     for code, name in alliances_data:
         alliances.append(Alliance(code=code, name=name))

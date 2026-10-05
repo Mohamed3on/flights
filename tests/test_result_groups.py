@@ -3,8 +3,12 @@
 
 import json
 import unittest
+from types import SimpleNamespace
 
-from fast_flights.parser import parse_js
+from fast_flights.exceptions import FlightsNotFound
+from fast_flights.fetcher import _fetch_deferred_results
+from fast_flights.parser import parse, parse_js
+from fast_flights.querying import FlightQuery, create_query
 
 
 def itinerary(price):
@@ -52,4 +56,54 @@ class ResultGroupTests(unittest.TestCase):
         flights = parse_groups([None], [None])
         self.assertEqual(flights, [])
         self.assertEqual(flights.metadata.airlines[0].code, "TA")
+
+
+def deferred_page(token, query):
+    """A results page that Google rendered before the search finished."""
+    status = [None] * 8
+    status[0] = [None, None, 0, "id", token]
+    status[7] = [None, [[["TEST", "Test Alliance"]]]]  # no airline list yet
+    return "".join(
+        f"<script class=\"ds:{key}\">AF_initDataCallback({{key: 'ds:{key}', hash: '1', "
+        f"data:{json.dumps(data)}, sideChannel: {{}}}});</script>"
+        for key, data in ((0, [None, [2, query]]), (1, status))
+    )
+
+
+class FakeClient:
+    def __init__(self, *chunks):
+        self.body = ")]}'\n\n" + "".join(f"{len(c)}\n{c}\n" for c in chunks)
+        self.posts = []
+
+    def post(self, url, **kwargs):
+        self.posts.append(kwargs)
+        return SimpleNamespace(text=self.body, status_code=200)
+
+
+class DeferredResultsTests(unittest.TestCase):
+    query = create_query(
+        flights=[FlightQuery(date="2027-03-20", from_airport="AAA", to_airport="BBB")],
+        language="en-US",
+        currency="EUR",
+    )
+
+    def test_page_without_results_or_airlines_parses_empty(self):
+        self.assertEqual(parse(deferred_page("TOKEN", ["QUERY"])), [])
+
+    def test_follow_up_echoes_page_token_and_query(self):
+        payload = [None] * 8
+        payload[2] = [[itinerary([None, 100])]]
+        payload[7] = [None, [[["TEST", "Test Alliance"]], [["TA", "Test Airline"]]]]
+        client = FakeClient(
+            json.dumps([["wrb.fr", None, json.dumps(payload)]]), json.dumps([["di", 1]])
+        )
+        flights = _fetch_deferred_results(client, deferred_page("TOKEN", ["QUERY"]), self.query)
+        self.assertEqual([f.price for f in flights], [100])
+        request = json.loads(json.loads(client.posts[0]["data"]["f.req"])[1])
+        self.assertEqual(request[:2], [[None, None, None, "TOKEN"], ["QUERY"]])
+
+    def test_refused_follow_up_is_an_error_not_an_empty_result(self):
+        client = FakeClient(json.dumps([["wrb.fr", None, None, None, None, [13]]]))
+        with self.assertRaisesRegex(FlightsNotFound, "refused"):
+            _fetch_deferred_results(client, deferred_page("TOKEN", ["QUERY"]), self.query)
 # [/AI CONTENT]
