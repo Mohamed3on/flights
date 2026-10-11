@@ -4,9 +4,10 @@
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fast_flights.exceptions import FlightsNotFound
-from fast_flights.fetcher import _fetch_deferred_results
+from fast_flights.fetcher import _fetch_deferred_results, get_flights
 from fast_flights.parser import parse, parse_js
 from fast_flights.querying import FlightQuery, create_query
 
@@ -58,10 +59,11 @@ class ResultGroupTests(unittest.TestCase):
         self.assertEqual(flights.metadata.airlines[0].code, "TA")
 
 
-def deferred_page(token, query):
+def deferred_page(token, query, *prices):
     """A results page that Google rendered before the search finished."""
     status = [None] * 8
     status[0] = [None, None, 0, "id", token]
+    status[2] = [[itinerary([None, price]) for price in prices]] if prices else None
     status[7] = [None, [[["TEST", "Test Alliance"]]]]  # no airline list yet
     return "".join(
         f"<script class=\"ds:{key}\">AF_initDataCallback({{key: 'ds:{key}', hash: '1', "
@@ -86,11 +88,15 @@ REFUSED = json.dumps([["wrb.fr", None, None, None, None, [13]]])
 class FakeClient:
     """Answers each post with the next response, a list of chunks, then repeats the last."""
 
-    def __init__(self, *responses):
+    def __init__(self, *responses, page=""):
+        self.page = page
         self.bodies = [
             ")]}'\n\n" + "".join(f"{len(c)}\n{c}\n" for c in chunks) for chunks in responses
         ]
         self.posts = []
+
+    def get(self, url, **kwargs):
+        return SimpleNamespace(text=self.page, status_code=200)
 
     def post(self, url, **kwargs):
         self.posts.append(kwargs)
@@ -131,4 +137,11 @@ class DeferredResultsTests(unittest.TestCase):
         client = FakeClient([REFUSED])
         with self.assertRaisesRegex(FlightsNotFound, "refused"):
             _fetch_deferred_results(client, deferred_page("TOKEN", ["QUERY"]), self.query)
+
+    def test_refused_follow_up_falls_back_to_the_page_results(self):
+        client = FakeClient([REFUSED], page=deferred_page("TOKEN", ["QUERY"], 100))
+        with patch("fast_flights.fetcher._client", return_value=client):
+            flights = get_flights(self.query)
+        self.assertEqual([f.price for f in flights], [100])
+        self.assertFalse(flights.complete)
 # [/AI CONTENT]

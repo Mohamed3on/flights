@@ -111,6 +111,12 @@ def main(argv: list[str] | None = None) -> None:
         )
     except Exception as e:
         sys.exit(f"flights: {e}")
+    if not results.complete:
+        print(
+            f"flights: Google refused the full results, so these are only the first "
+            f"{len(results)} it found; retry later for the rest",
+            file=sys.stderr,
+        )
 
     results = sorted(results, key=lambda f: (f.price is None, f.price or 0))
     if args.json:

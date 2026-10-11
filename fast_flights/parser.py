@@ -22,6 +22,8 @@ class ResultList(list[Flights]):
     """Searched flights list, with metadata attached."""
 
     metadata: JsMetadata
+    # False when Google refused the full results and only the page's first ones came back.
+    complete: bool = True
 
 
 def parse(html: str) -> ResultList:

@@ -68,7 +68,15 @@ def get_flights(
     html = client.get(URL, params=q.params()).text
     # The page carries at most the first results Google found (16 of 32 for
     # BKK→CNX, none for slow searches); the web client streams the rest.
-    return _fetch_deferred_results(client, html, q)
+    try:
+        return _fetch_deferred_results(client, html, q)
+    except FlightsNotFound:
+        # When Google refuses the rest, the page's first results beat nothing.
+        flights = parse(html)
+        if not flights:
+            raise
+        flights.complete = False
+        return flights
 
 
 def _client(proxy: str | None) -> Client:
