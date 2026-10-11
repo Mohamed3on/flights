@@ -14,6 +14,7 @@ SHOPPING_RESULTS_URL = (
     "https://www.google.com/_/FlightsFrontendUi/data/"
     "travel.frontend.flights.FlightsFrontendService/GetShoppingResults"
 )
+FOLLOW_UP_TRIES = 3
 # EU/EEA IPs get Google's consent page instead of results unless this SOCS cookie is set.
 CONSENT_COOKIE = "CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjMwODI5LjA3X3AxGgJlbiACGgYIgJnPpwY"
 
@@ -65,12 +66,9 @@ def get_flights(
 
     client = _client(proxy)
     html = client.get(URL, params=q.params()).text
-    flights = parse(html)
-    if not flights:
-        # Slow searches (multi-city, several passengers, some long-haul routes)
-        # render without results, and the web client fetches them separately.
-        flights = _fetch_deferred_results(client, html, q)
-    return flights
+    # The page carries at most the first results Google found (16 of 32 for
+    # BKK→CNX, none for slow searches); the web client streams the rest.
+    return _fetch_deferred_results(client, html, q)
 
 
 def _client(proxy: str | None) -> Client:
@@ -98,30 +96,43 @@ def _fetch_deferred_results(client: Client, html: str, q: Query) -> ResultList:
     """Fetch the results Google left out of the page, as the web client does.
 
     The page still carries a search token (ds:1) and the decoded query (ds:0);
-    GetShoppingResults takes both and returns the top results, usually about ten.
+    GetShoppingResults takes both and streams the results as they arrive.
     """
     token, query = _page_data(html, 1)[0][4], _page_data(html, 0)[1][1]
-    res = client.post(
-        SHOPPING_RESULTS_URL,
-        params={"hl": q.language, "rt": "c"},
-        data={"f.req": _compact([None, _compact([[None, None, None, token], query, 0, 1, 0, 1])])},
-        headers={
-            "X-Same-Domain": "1",
-            "x-goog-ext-259736195-jspb": _compact(
-                [q.language or None, None, q.currency or None, 1, None, None, None, None, 1, []]
-            ),
-        },
-    )
-    # The body is ")]}'" then length-prefixed JSON chunks; results are in "wrb.fr".
-    for line in res.text.splitlines():
-        if line.startswith('[["wrb.fr"'):
-            chunk = json.loads(line)[0]
-            if chunk[2] is None:
-                raise FlightsNotFound(
-                    f"Google refused the follow-up request for this search's results "
-                    f"(error {chunk[5][0]}), as it does after many searches from one IP; retry later"
-                )
-            return parse_payload(json.loads(chunk[2]))
+    payload = error = None
+    # Google sometimes refuses the request or ends the stream before the search
+    # finishes; asking again with the same token picks up where it stopped.
+    for _ in range(FOLLOW_UP_TRIES):
+        res = client.post(
+            SHOPPING_RESULTS_URL,
+            params={"hl": q.language, "rt": "c"},
+            data={"f.req": _compact([None, _compact([[None, None, None, token], query, 0, 1, 0, 1])])},
+            headers={
+                "X-Same-Domain": "1",
+                "x-goog-ext-259736195-jspb": _compact(
+                    [q.language or None, None, q.currency or None, 1, None, None, None, None, 1, []]
+                ),
+            },
+        )
+        # The body is ")]}'" then length-prefixed JSON chunks. Results come in "wrb.fr"
+        # chunks, each a fuller snapshot than the one before.
+        for line in res.text.splitlines():
+            if line.startswith('[["wrb.fr"'):
+                chunk = json.loads(line)[0]
+                if chunk[2] is None:
+                    error = chunk[5][0]
+                else:
+                    payload = json.loads(chunk[2])
+        # Only the snapshot of a finished search sets index 31.
+        if payload is not None and len(payload) > 31 and payload[31]:
+            break
+    if payload is not None:
+        return parse_payload(payload)
+    if error is not None:
+        raise FlightsNotFound(
+            f"Google refused the follow-up request for this search's results "
+            f"(error {error}), as it does after many searches from one IP; retry later"
+        )
     raise FlightsNotFound(f"Google's follow-up results request failed (HTTP {res.status_code})")
 
 

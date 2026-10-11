@@ -70,14 +70,32 @@ def deferred_page(token, query):
     )
 
 
+def results_chunk(*prices, done=True):
+    """One streamed "wrb.fr" chunk; only a finished search's snapshot sets index 31."""
+    payload = [None] * (33 if done else 8)
+    payload[2] = [[itinerary([None, price]) for price in prices]]
+    payload[7] = [None, [[["TEST", "Test Alliance"]], [["TA", "Test Airline"]]]]
+    if done:
+        payload[31] = payload[32] = True
+    return json.dumps([["wrb.fr", None, json.dumps(payload)]])
+
+
+REFUSED = json.dumps([["wrb.fr", None, None, None, None, [13]]])
+
+
 class FakeClient:
-    def __init__(self, *chunks):
-        self.body = ")]}'\n\n" + "".join(f"{len(c)}\n{c}\n" for c in chunks)
+    """Answers each post with the next response, a list of chunks, then repeats the last."""
+
+    def __init__(self, *responses):
+        self.bodies = [
+            ")]}'\n\n" + "".join(f"{len(c)}\n{c}\n" for c in chunks) for chunks in responses
+        ]
         self.posts = []
 
     def post(self, url, **kwargs):
         self.posts.append(kwargs)
-        return SimpleNamespace(text=self.body, status_code=200)
+        body = self.bodies[min(len(self.posts), len(self.bodies)) - 1]
+        return SimpleNamespace(text=body, status_code=200)
 
 
 class DeferredResultsTests(unittest.TestCase):
@@ -91,19 +109,26 @@ class DeferredResultsTests(unittest.TestCase):
         self.assertEqual(parse(deferred_page("TOKEN", ["QUERY"])), [])
 
     def test_follow_up_echoes_page_token_and_query(self):
-        payload = [None] * 8
-        payload[2] = [[itinerary([None, 100])]]
-        payload[7] = [None, [[["TEST", "Test Alliance"]], [["TA", "Test Airline"]]]]
-        client = FakeClient(
-            json.dumps([["wrb.fr", None, json.dumps(payload)]]), json.dumps([["di", 1]])
-        )
+        client = FakeClient([results_chunk(100), json.dumps([["di", 1]])])
         flights = _fetch_deferred_results(client, deferred_page("TOKEN", ["QUERY"]), self.query)
         self.assertEqual([f.price for f in flights], [100])
         request = json.loads(json.loads(client.posts[0]["data"]["f.req"])[1])
         self.assertEqual(request[:2], [[None, None, None, "TOKEN"], ["QUERY"]])
 
+    def test_follow_up_keeps_the_last_streamed_snapshot(self):
+        client = FakeClient([results_chunk(100, done=False), results_chunk(100, 90)])
+        flights = _fetch_deferred_results(client, deferred_page("TOKEN", ["QUERY"]), self.query)
+        self.assertEqual([f.price for f in flights], [100, 90])
+        self.assertEqual(len(client.posts), 1)
+
+    def test_follow_up_asks_again_until_the_search_finishes(self):
+        client = FakeClient([REFUSED], [results_chunk(100, done=False)], [results_chunk(100, 90)])
+        flights = _fetch_deferred_results(client, deferred_page("TOKEN", ["QUERY"]), self.query)
+        self.assertEqual([f.price for f in flights], [100, 90])
+        self.assertEqual(len(client.posts), 3)
+
     def test_refused_follow_up_is_an_error_not_an_empty_result(self):
-        client = FakeClient(json.dumps([["wrb.fr", None, None, None, None, [13]]]))
+        client = FakeClient([REFUSED])
         with self.assertRaisesRegex(FlightsNotFound, "refused"):
             _fetch_deferred_results(client, deferred_page("TOKEN", ["QUERY"]), self.query)
 # [/AI CONTENT]
