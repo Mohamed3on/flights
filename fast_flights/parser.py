@@ -105,6 +105,7 @@ def parse_payload(payload: list) -> ResultList:
             plane_type = single_flight[17]
 
             duration = single_flight[11]
+            airline_code, number = single_flight[22][:2]
 
             sg_flights.append(
                 SingleFlight(
@@ -114,6 +115,7 @@ def parse_payload(payload: list) -> ResultList:
                     arrival=arrival,
                     duration=duration,
                     plane_type=plane_type,
+                    flight_number=f"{airline_code} {number}",
                 )
             )
 

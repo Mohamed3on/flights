@@ -14,8 +14,10 @@ from .pb.flights_pb2 import (
     Info,
     Passenger,
     Seat,
+    SelectedFlight,
     Trip,
 )
+from .model import SingleFlight
 from .types import Currency, Language, SeatType, TripType
 
 
@@ -128,6 +130,8 @@ class FlightQuery:
     min_layover_minutes: int | None = None
     max_layover_minutes: int | None = None
     less_emissions_only: bool = False
+    selected_flights: list[SingleFlight] | None = None
+    """Flights already picked for this leg; Google then lists the next leg's options."""
 
     def pb(self) -> FlightData:
         if isinstance(self.date, str):
@@ -137,6 +141,16 @@ class FlightQuery:
 
         return FlightData(
             date=date,
+            selected_flights=[
+                SelectedFlight(
+                    from_airport=f.from_airport.code,
+                    date="%d-%02d-%02d" % f.departure.date,
+                    to_airport=f.to_airport.code,
+                    airline=f.flight_number.split()[0],
+                    flight_number=f.flight_number.split()[1],
+                )
+                for f in self.selected_flights or []
+            ],
             from_airport=Airport(airport=self.from_airport),
             to_airport=Airport(airport=self.to_airport),
             max_stops=self.max_stops,

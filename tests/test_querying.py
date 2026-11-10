@@ -1,8 +1,10 @@
 """Unit tests for Google Flights query serialization."""
 
 import unittest
+from base64 import b64decode
 
 from fast_flights import FlightQuery, Passengers, create_query
+from fast_flights.model import Airport, SimpleDatetime, SingleFlight
 from fast_flights.pb.flights_pb2 import Emissions, Info
 
 
@@ -116,6 +118,30 @@ class QueryingTests(unittest.TestCase):
         )
         self.assertEqual(list(Info.FromString(query.to_bytes()).passengers), [1, 1, 2, 3])
         self.assertEqual(Passengers(infants_in_seat=1).pb(), [4])
+
+    def test_selected_flights_encode_like_a_google_booking_link(self) -> None:
+        # The outbound leg of a Google Flights booking link for SWISS LX 967 + LX 180.
+        link = Info.FromString(b64decode(
+            "CBwQAhpgEgoyMDI2LTEyLTA4Ih8KA0JFUhIKMjAyNi0xMi0wOBoDWlJIKgJMWDIDOTY3Ih8KA1pSSBIKMjAy"
+            "Ni0xMi0wOBoDQktLKgJMWDIDMTgwagcIARIDQkVScgcIARIDQktLGmASCjIwMjctMDMtMTciHwoDQktLEgoy"
+            "MDI3LTAzLTE3GgNaUkgqAkxYMgMxODEiHwoDWlJIEgoyMDI3LTAzLTE3GgNCRVIqAkxYMgM5NjJqBwgBEgNC"
+            "S0tyBwgBEgNCRVJAAUABQAJAA0gBcAGCAQsI____________AZgBAQ==",
+            altchars=b"-_",
+        ))
+        segment = lambda a, b, number: SingleFlight(
+            from_airport=Airport(name="", code=a), to_airport=Airport(name="", code=b),
+            departure=SimpleDatetime(date=(2026, 12, 8), time=(0, 0)),
+            arrival=SimpleDatetime(date=(2026, 12, 8), time=(0, 0)),
+            duration=0, plane_type="", flight_number=number,
+        )
+        query = create_query(flights=[FlightQuery(
+            date="2026-12-08", from_airport="BER", to_airport="BKK",
+            selected_flights=[segment("BER", "ZRH", "LX 967"), segment("ZRH", "BKK", "LX 180")],
+        )])
+        self.assertEqual(
+            Info.FromString(query.to_bytes()).data[0].selected_flights,
+            link.data[0].selected_flights,
+        )
     # [/AI CONTENT]
 
 

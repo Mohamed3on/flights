@@ -45,8 +45,16 @@ class Emissions(int, Enum):
 class Airport(__Composite):
     airport: str
 
+class SelectedFlight(__Composite):
+    from_airport: str
+    date: str
+    to_airport: str
+    airline: str
+    flight_number: str
+
 class FlightData(__Composite):
     date: str
+    selected_flights: __RepeatedCompositeContainer[SelectedFlight] | list[SelectedFlight]
     from_airport: Airport
     to_airport: Airport
     max_stops: int | None

@@ -13,11 +13,12 @@ from fast_flights.querying import FlightQuery, create_query
 
 
 def itinerary(price):
-    segment = [None] * 22
+    segment = [None] * 23
     segment[3:7] = ["AAA", "Origin", "Destination", "BBB"]
     segment[8], segment[10] = [9], [11]
     segment[11], segment[17] = 120, "Test aircraft"
     segment[20] = segment[21] = [2026, 10, 1]
+    segment[22] = ["TA", "1"]
     flight = [None] * 23
     flight[0:3] = ["nonstop", ["Test Airline"], [segment]]
     flight[22] = [None] * 7 + [100000, 120000]

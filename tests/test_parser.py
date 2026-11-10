@@ -48,12 +48,13 @@ class CapturedResponseTests(unittest.TestCase):
 
 def parse_time(value) -> tuple[int, int]:
     """Parse a payload carrying a single segment with the given departure."""
-    segment = [None] * 22
+    segment = [None] * 23
     segment[3], segment[4] = "TPE", "Taiwan Taoyuan International Airport"
     segment[5], segment[6] = "Narita International Airport", "NRT"
     segment[8], segment[10] = value, [13, 5]
     segment[11], segment[17] = 205, "Airbus A350"
     segment[20] = segment[21] = [2026, 9, 1]
+    segment[22] = ["TA", "1"]
 
     flight = [None] * 23
     flight[0], flight[1], flight[2] = "nonstop", ["Test Airline"], [segment]

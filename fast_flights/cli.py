@@ -8,6 +8,7 @@ from datetime import datetime
 
 from .fetcher import get_flights
 from .model import Flights, SimpleDatetime
+from .parser import ResultList
 from .querying import FlightQuery, Passengers, create_query
 
 SYMBOLS = {"EUR": "€", "USD": "$", "GBP": "£"}
@@ -15,6 +16,10 @@ SYMBOLS = {"EUR": "€", "USD": "$", "GBP": "£"}
 
 def _dt(t: SimpleDatetime) -> datetime:
     return datetime(*t.date, *t.time)
+
+
+def _by_price(results: list[Flights]) -> list[Flights]:
+    return sorted(results, key=lambda f: (f.price is None, f.price or 0))
 
 
 def _row(f: Flights, symbol: str) -> str:
@@ -54,6 +59,10 @@ def main(argv: list[str] | None = None) -> None:
         help="return date; prices become round-trip totals",
     )
     p.add_argument(
+        "-o", "--outbound", type=int, metavar="ROW",
+        help="with --return: list the return flights for outbound row ROW",
+    )
+    p.add_argument(
         "--leg", nargs=3, action="append", metavar=("FROM", "TO", "DATE"),
         help="add a multi-city leg (repeatable); prices become trip totals",
     )
@@ -78,6 +87,8 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
     if args.return_date and args.leg:
         p.error("use either --return or --leg, not both")
+    if args.outbound and not args.return_date:
+        p.error("--outbound needs --return")
 
     origin, destination = args.origin.upper(), args.destination.upper()
     currency = args.currency.upper()
@@ -91,8 +102,8 @@ def main(argv: list[str] | None = None) -> None:
         for a, b, d in args.leg or []
     ]
 
-    try:
-        results = get_flights(
+    def search() -> ResultList:
+        return get_flights(
             create_query(
                 flights=legs,
                 seat=args.seat,
@@ -109,6 +120,16 @@ def main(argv: list[str] | None = None) -> None:
                 carry_on_bags=int(args.carry_on),
             )
         )
+
+    try:
+        results = search()
+        # Google lists a round trip's return flights only once an outbound is picked.
+        if args.outbound:
+            outbound = _by_price(results)
+            if not 0 < args.outbound <= len(outbound):
+                sys.exit(f"flights: no outbound row {args.outbound}; there are {len(outbound)}")
+            legs[0].selected_flights = outbound[args.outbound - 1].flights
+            results = search()
     except Exception as e:
         sys.exit(f"flights: {e}")
     if not results.complete:
@@ -118,14 +139,14 @@ def main(argv: list[str] | None = None) -> None:
             file=sys.stderr,
         )
 
-    results = sorted(results, key=lambda f: (f.price is None, f.price or 0))
+    results = _by_price(results)
     if args.json:
         print(json.dumps([asdict(f) for f in results], indent=2))
         return
     if not results:
         sys.exit("flights: no flights found")
 
-    for f in results[: args.limit or None]:
-        print(_row(f, SYMBOLS.get(currency, currency + " ")))
+    for i, f in enumerate(results[: args.limit or None], 1):
+        print(f"{i:>3}  " + _row(f, SYMBOLS.get(currency, currency + " ")))
     if args.limit and len(results) > args.limit:
         print(f"… {len(results) - args.limit} more (-n 0 shows all)")

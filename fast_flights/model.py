@@ -44,6 +44,9 @@ class SingleFlight:
 
     plane_type: str
 
+    flight_number: str
+    """Airline code and number, e.g. "LX 180"."""
+
 
 @dataclass
 class CarbonEmission:
