@@ -65,3 +65,22 @@ class Flights:
     airlines: list[str]
     flights: list[SingleFlight]
     carbon: CarbonEmission
+
+    booking_token: str | None = None
+    """Identifies this itinerary to `get_booking_options`."""
+
+
+@dataclass
+class BookingOption:
+    """One way to book an itinerary, from its Google Flights booking page."""
+
+    seller: str
+    """The airline or travel site selling it."""
+
+    price: int | None
+
+    fare: str | None
+    """The airline's fare name, e.g. "Economy Comfort"; None for travel sites."""
+
+    checked_bag: bool | None
+    """Whether the fare includes a checked bag per passenger; None when unknown."""

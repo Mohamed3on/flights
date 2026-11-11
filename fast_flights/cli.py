@@ -6,10 +6,9 @@ import sys
 from dataclasses import asdict
 from datetime import datetime
 
-from .fetcher import get_flights
+from .fetcher import get_booking_options, get_flights
 from .model import Flights, SimpleDatetime
-from .parser import ResultList
-from .querying import FlightQuery, Passengers, create_query
+from .querying import FlightQuery, Passengers, Query, create_query
 
 SYMBOLS = {"EUR": "€", "USD": "$", "GBP": "£"}
 
@@ -63,6 +62,11 @@ def main(argv: list[str] | None = None) -> None:
         help="with --return: list the return flights for outbound row ROW",
     )
     p.add_argument(
+        "-b", "--book", type=int, metavar="ROW",
+        help="list the live booking options for result row ROW: each seller, fare and "
+        "whether it includes a checked bag (search prices are Google's cached ones)",
+    )
+    p.add_argument(
         "--leg", nargs=3, action="append", metavar=("FROM", "TO", "DATE"),
         help="add a multi-city leg (repeatable); prices become trip totals",
     )
@@ -89,6 +93,8 @@ def main(argv: list[str] | None = None) -> None:
         p.error("use either --return or --leg, not both")
     if args.outbound and not args.return_date:
         p.error("--outbound needs --return")
+    if args.book and (args.leg or args.return_date and not args.outbound):
+        p.error("--book works on one-way results, or on return flights listed with --outbound")
 
     origin, destination = args.origin.upper(), args.destination.upper()
     currency = args.currency.upper()
@@ -102,36 +108,50 @@ def main(argv: list[str] | None = None) -> None:
         for a, b, d in args.leg or []
     ]
 
-    def search() -> ResultList:
-        return get_flights(
-            create_query(
-                flights=legs,
-                seat=args.seat,
-                trip="multi-city" if args.leg else "round-trip" if args.return_date else "one-way",
-                passengers=Passengers(
-                    adults=args.adults,
-                    children=args.children,
-                    infants_in_seat=args.infants_seat,
-                    infants_on_lap=args.infants_lap,
-                ),
-                language="en-US",
-                currency=currency,
-                max_stops=args.max_stops,
-                carry_on_bags=int(args.carry_on),
-            )
+    def query() -> Query:
+        return create_query(
+            flights=legs,
+            seat=args.seat,
+            trip="multi-city" if args.leg else "round-trip" if args.return_date else "one-way",
+            passengers=Passengers(
+                adults=args.adults,
+                children=args.children,
+                infants_in_seat=args.infants_seat,
+                infants_on_lap=args.infants_lap,
+            ),
+            language="en-US",
+            currency=currency,
+            max_stops=args.max_stops,
+            carry_on_bags=int(args.carry_on),
         )
 
+    def pick(rows: list[Flights], row: int, what: str) -> Flights:
+        if not 0 < row <= len(rows):
+            sys.exit(f"flights: no {what} row {row}; there are {len(rows)}")
+        return rows[row - 1]
+
     try:
-        results = search()
+        results = get_flights(query())
         # Google lists a round trip's return flights only once an outbound is picked.
         if args.outbound:
-            outbound = _by_price(results)
-            if not 0 < args.outbound <= len(outbound):
-                sys.exit(f"flights: no outbound row {args.outbound}; there are {len(outbound)}")
-            legs[0].selected_flights = outbound[args.outbound - 1].flights
-            results = search()
+            legs[0].selected_flights = pick(_by_price(results), args.outbound, "outbound").flights
+            results = get_flights(query())
+        if args.book:
+            booking = pick(_by_price(results), args.book, "result")
+            legs[-1].selected_flights = booking.flights
+            options = get_booking_options(query(), booking.booking_token)
     except Exception as e:
         sys.exit(f"flights: {e}")
+    if args.book:
+        if args.json:
+            print(json.dumps([asdict(o) for o in options], indent=2))
+            return
+        symbol = SYMBOLS.get(currency, currency + " ")
+        bags = {True: "checked bag included", False: "no checked bag", None: ""}
+        for o in options:
+            price = "n/a" if o.price is None else f"{symbol}{o.price}"
+            print(f"{price:>7}  {o.seller[:22]:22}  {(o.fare or '')[:24]:24}  {bags[o.checked_bag]}".rstrip())
+        return
     if not results.complete:
         print(
             f"flights: Google refused the full results, so these are only the first "

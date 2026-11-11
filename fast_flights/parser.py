@@ -10,6 +10,7 @@ from .model import (
     Airline,
     Airport,
     Alliance,
+    BookingOption,
     CarbonEmission,
     Flights,
     JsMetadata,
@@ -133,7 +134,26 @@ def parse_payload(payload: list) -> ResultList:
                 carbon=CarbonEmission(
                     typical_on_route=typical_carbon_emission, emission=carbon_emission
                 ),
+                booking_token=k[1][1] if len(k[1]) > 1 else None,
             )
         )
 
     return flights
+
+
+def parse_booking_options(payload: list) -> list[BookingOption]:
+    """Parse a GetBookingResults payload."""
+    options = []
+    for option in payload[1][0] or []:
+        fare = option[21] if len(option) > 21 else None
+        # Fare attribute 9 is the checked bag: 1 when the first one is free, 2 when none is.
+        bag = dict(fare[1]).get(9) if fare and fare[1] else None
+        options.append(
+            BookingOption(
+                seller=option[1][0][1],
+                price=option[7][0][1] if option[7] and option[7][0] else None,
+                fare=fare[3] if fare else None,
+                checked_bag={1: True, 2: False}.get(bag),
+            )
+        )
+    return options

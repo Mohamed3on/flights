@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from fast_flights.exceptions import FlightsNotFound
-from fast_flights.fetcher import _fetch_deferred_results, get_flights
+from fast_flights.fetcher import _fetch_deferred_results, get_booking_options, get_flights
 from fast_flights.parser import parse, parse_js
 from fast_flights.querying import FlightQuery, create_query
 
@@ -145,4 +145,45 @@ class DeferredResultsTests(unittest.TestCase):
             flights = get_flights(self.query)
         self.assertEqual([f.price for f in flights], [100])
         self.assertFalse(flights.complete)
+
+    def test_results_keep_each_itinerary_booking_token(self):
+        flight = itinerary([None, 100])[0]
+        flights = parse_groups(None, [[[flight, [[None, 100], "BOOKTOKEN"]], itinerary([None, 90])]])
+        self.assertEqual([f.booking_token for f in flights], ["BOOKTOKEN", None])
+
+
+def booking_option(seller, price, fare=None, bag=None):
+    """One option of a GetBookingResults payload; airlines name the fare and its bag."""
+    option = [None] * 23
+    option[1] = [[seller[:2].upper(), seller, None, fare is not None]]
+    option[7] = [[None, price], "ignored"]
+    if fare:
+        option[21] = [["XX", fare.upper()], [[8, 1], [9, bag]], None, fare]
+    return option
+
+
+class BookingOptionsTests(unittest.TestCase):
+    query = DeferredResultsTests.query
+
+    def test_lists_each_seller_fare_and_checked_bag(self):
+        page = (
+            "<script class=\"ds:0\">AF_initDataCallback({key: 'ds:0', hash: '1', data:"
+            + json.dumps([None, [3, ["ITINERARY"], None, [None, [0, 1], None, []]]])
+            + ", sideChannel: {}});</script>"
+        )
+        payload = [None, [[
+            booking_option("SWISS", 2338, "Economy Light", 2),
+            booking_option("SWISS", 2617, "Economy Comfort", 1),
+            booking_option("Expedia", 2249),
+        ]]]
+        client = FakeClient([json.dumps([["wrb.fr", None, json.dumps(payload)]])], page=page)
+        with patch("fast_flights.fetcher._client", return_value=client):
+            options = get_booking_options(self.query, "BOOKTOKEN")
+        self.assertEqual(
+            [(o.seller, o.price, o.fare, o.checked_bag) for o in options],
+            [("SWISS", 2338, "Economy Light", False), ("SWISS", 2617, "Economy Comfort", True),
+             ("Expedia", 2249, None, None)],
+        )
+        request = json.loads(json.loads(client.posts[0]["data"]["f.req"])[1])
+        self.assertEqual(request, [[None, "BOOKTOKEN"], ["ITINERARY"], None, 0])
 # [/AI CONTENT]
