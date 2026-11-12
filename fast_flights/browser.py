@@ -1,13 +1,15 @@
 """Search Google Flights in a headless Chromium, as its web app does.
 
-Google answers scripted results requests with error 13 once it distrusts an IP,
-but not the web app's own: their `x-goog-batchexecute-bgr` header carries a
-BotGuard token minted in the page for that very request. So this loads the
-results or booking page and reads the page's own GetShoppingResults or
-GetBookingResults response. Slower than plain requests (about 2–10 s a page),
-but it gets what a browser gets.
+Google takes plain results requests for a bot: it refuses them (error 13) or
+answers with fewer, pricier itineraries and booking options without fare names.
+The web app's own requests carry an `x-goog-batchexecute-bgr` header, a BotGuard
+token minted in the page for that very request, so this loads the results or
+booking page and reads the page's own GetShoppingResults or GetBookingResults
+response. Slower than plain requests (about 3–7 s a page), but it gets what
+Chrome gets.
 """
 
+import platform
 import subprocess
 import sys
 import time
@@ -35,28 +37,30 @@ class Browser:
     def __init__(self) -> None:
         from playwright.sync_api import Error, sync_playwright
 
+        # Google serves a browser it takes for a bot a shorter, pricier list instead of
+        # refusing it: for BER⇄BKK, 28 itineraries with SWISS at €2,881 where Chrome
+        # lists 126 with SWISS at €2,739 and Hainan at €2,191. Playwright's headless
+        # shell always gets that list; full Chromium in new headless mode gets Chrome's,
+        # once it hides automation and calls itself Google Chrome (see `_as_chrome`).
+        launch = lambda: self._playwright.chromium.launch(  # noqa: E731
+            channel="chromium", args=["--disable-blink-features=AutomationControlled"]
+        )
         self._playwright = sync_playwright().start()
         try:
             try:
-                self._browser = self._playwright.chromium.launch()
+                self._browser = launch()
             except Error as e:
                 if "playwright install" not in str(e):
                     raise
                 print("flights: installing Playwright's Chromium (once)…", file=sys.stderr)
-                subprocess.run(
-                    [sys.executable, "-m", "playwright", "install", "chromium-headless-shell"],
-                    check=True,
-                )
-                self._browser = self._playwright.chromium.launch()
-            # Google tells airlines the user agent; some answer "HeadlessChrome" differently.
-            probe = self._browser.new_page()
-            user_agent = probe.evaluate("navigator.userAgent").replace("HeadlessChrome", "Chrome")
-            probe.close()
-            context = self._browser.new_context(locale="en-US", user_agent=user_agent)
+                subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+                self._browser = launch()
+            context = self._browser.new_context(locale="en-US")
             context.add_cookies(
                 [{"name": "SOCS", "value": CONSENT_COOKIE, "domain": ".google.com", "path": "/"}]
             )
             self._page = context.new_page()
+            _as_chrome(self._page, self._browser.version)
         except BaseException:
             self.close()
             raise
@@ -115,6 +119,35 @@ class Browser:
             raise FlightsNotFound(f"Google Flights' page sent no {method} request in {TIMEOUT} s")
         finally:
             self._page.remove_listener("response", listener)
+
+
+def _as_chrome(page, version: str) -> None:
+    """Make `page` present itself as this machine's Google Chrome, in its user agent and client hints."""
+    cdp = page.context.new_cdp_session(page)
+    user_agent = cdp.send("Browser.getVersion")["userAgent"].replace("HeadlessChrome", "Chrome")
+    os_name, os_version = {
+        "darwin": ("macOS", platform.mac_ver()[0]),
+        "win32": ("Windows", platform.version()),
+    }.get(sys.platform, ("Linux", ""))
+    brands = [("Google Chrome", version), ("Chromium", version), ("Not.A/Brand", "24.0.0.0")]
+    cdp.send(
+        "Network.setUserAgentOverride",
+        {
+            "userAgent": user_agent,
+            "userAgentMetadata": {
+                "brands": [{"brand": b, "version": v.split(".")[0]} for b, v in brands],
+                "fullVersionList": [{"brand": b, "version": v} for b, v in brands],
+                "fullVersion": version,
+                "platform": os_name,
+                "platformVersion": os_version,
+                "architecture": "arm" if platform.machine() in ("arm64", "aarch64") else "x86",
+                "bitness": "64",
+                "model": "",
+                "mobile": False,
+                "wow64": False,
+            },
+        },
+    )
 
 
 def _finished(payload: list) -> bool:

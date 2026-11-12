@@ -92,9 +92,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     p.add_argument("-c", "--currency", default="EUR")
     p.add_argument(
-        "--browser", action="store_true",
-        help="search in a headless Chromium right away; by default it is used only when "
-        "Google refuses plain requests or cuts their results short",
+        "--plain", action="store_true",
+        help="search with plain requests instead of a headless Chromium: a few seconds "
+        "faster, but Google takes them for a bot and answers with fewer, pricier "
+        "itineraries and no fare names, or refuses them",
     )
     p.add_argument(
         "-n", "--limit", type=int, default=20, help="rows to print, 0 for all (default: 20)"
@@ -151,15 +152,7 @@ def main(argv: list[str] | None = None) -> None:
             return browser
 
         def fetch(plain: Callable[[], T], in_browser: Callable[[Browser], T]) -> T:
-            # Plain requests are fastest; when Google refuses them, its web app still gets through.
-            if not args.browser:
-                try:
-                    result = plain()
-                    if getattr(result, "complete", True):
-                        return result
-                except Exception:
-                    pass
-            return in_browser(browse())
+            return plain() if args.plain else in_browser(browse())
 
         def search() -> ResultList:
             return fetch(lambda: get_flights(query()), lambda b: b.get_flights(query()))

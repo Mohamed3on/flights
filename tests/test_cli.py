@@ -1,12 +1,13 @@
 """Synthetic CLI tests; no live requests or browser."""
 
 import io
+import platform
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
+from fast_flights.browser import _as_chrome
 from fast_flights.cli import main
-from fast_flights.exceptions import FlightsNotFound
 from fast_flights.parser import ResultList
 
 
@@ -15,6 +16,7 @@ class FakeBrowser:
 
     def __init__(self):
         self.closed = False
+        self.searches = 0
         FakeBrowser.instances.append(self)
 
     def __enter__(self):
@@ -24,39 +26,51 @@ class FakeBrowser:
         self.closed = True
 
     def get_flights(self, q):
+        self.searches += 1
         return ResultList()
 
 
-def results(complete=True):
-    flights = ResultList()
-    flights.complete = complete
-    return flights
-
-
-class BrowserFallbackTests(unittest.TestCase):
+class BrowserTests(unittest.TestCase):
     def setUp(self):
         FakeBrowser.instances.clear()
 
-    def run_cli(self, *args, plain):
+    def run_cli(self, *args):
         with patch("fast_flights.cli.Browser", FakeBrowser), \
-                patch("fast_flights.cli.get_flights", side_effect=plain) as get_flights, \
+                patch("fast_flights.cli.get_flights", return_value=ResultList()) as get_flights, \
                 redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
             main(["BER", "BKK", "2026-12-14", *args])  # no flights: exits after searching
         return get_flights
 
-    def test_complete_plain_results_need_no_browser(self):
-        self.run_cli(plain=[results()])
+    def test_searches_in_one_browser_that_is_closed(self):
+        get_flights = self.run_cli()
+        get_flights.assert_not_called()
+        self.assertEqual([(b.searches, b.closed) for b in FakeBrowser.instances], [(1, True)])
+
+    def test_plain_flag_needs_no_browser(self):
+        get_flights = self.run_cli("--plain")
+        get_flights.assert_called_once()
         self.assertEqual(FakeBrowser.instances, [])
 
-    def test_refused_or_partial_plain_results_fall_back_to_one_closed_browser(self):
-        for plain in ([FlightsNotFound("error 13")], [results(complete=False)]):
-            with self.subTest(plain=plain):
-                FakeBrowser.instances.clear()
-                self.run_cli(plain=plain)
-                self.assertEqual(len(FakeBrowser.instances), 1)
-                self.assertTrue(FakeBrowser.instances[0].closed)
 
-    def test_browser_flag_skips_plain_requests(self):
-        get_flights = self.run_cli("--browser", plain=[results()])
-        get_flights.assert_not_called()
-        self.assertTrue(FakeBrowser.instances[0].closed)
+class FakeCDP:
+    def __init__(self):
+        self.sent = {}
+
+    def send(self, method, params=None):
+        self.sent[method] = params
+        ua = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/158.0.1.2 Safari/537.36"
+        return {"userAgent": ua}
+
+
+class AsChromeTests(unittest.TestCase):
+    def test_hides_headless_from_user_agent_and_client_hints(self):
+        # Google answers a browser whose hints lack "Google Chrome" with its bot results.
+        cdp = FakeCDP()
+        page = type("Page", (), {"context": type("Context", (), {"new_cdp_session": lambda self, p: cdp})()})()
+        _as_chrome(page, "158.0.1.2")
+        override = cdp.sent["Network.setUserAgentOverride"]
+        self.assertNotIn("Headless", override["userAgent"])
+        brands = override["userAgentMetadata"]["brands"]
+        self.assertIn({"brand": "Google Chrome", "version": "158"}, brands)
+        self.assertFalse(any("Headless" in b["brand"] for b in brands))
+        self.assertEqual(override["userAgentMetadata"]["platform"] == "macOS", platform.system() == "Darwin")
