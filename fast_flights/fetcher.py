@@ -158,17 +158,22 @@ def _rpc(client: Client, url: str, request: list, q: Query) -> tuple[list | None
             ),
         },
     )
+    return *_last_payload(res.text), res.status_code
+
+
+def _last_payload(body: str) -> tuple[list | None, int | None]:
+    """Return a FlightsFrontendService response's last payload and its refusal code."""
     payload = error = None
     # The body is ")]}'" then length-prefixed JSON chunks. Results come in "wrb.fr"
     # chunks, each a fuller snapshot than the one before.
-    for line in res.text.splitlines():
+    for line in body.splitlines():
         if line.startswith('[["wrb.fr"'):
             chunk = json.loads(line)[0]
             if chunk[2] is None:
                 error = chunk[5][0]
             else:
                 payload = json.loads(chunk[2])
-    return payload, error, res.status_code
+    return payload, error
 
 
 def _rpc_failure(error: int | None, status: int) -> FlightsNotFound:

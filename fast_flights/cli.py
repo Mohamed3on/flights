@@ -3,12 +3,19 @@
 import argparse
 import json
 import sys
+from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import asdict
 from datetime import datetime
+from typing import TypeVar
 
+from .browser import Browser
 from .fetcher import get_booking_options, get_flights
 from .model import Flights, SimpleDatetime
+from .parser import ResultList
 from .querying import FlightQuery, Passengers, Query, create_query
+
+T = TypeVar("T")
 
 SYMBOLS = {"EUR": "€", "USD": "$", "GBP": "£"}
 
@@ -85,6 +92,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     p.add_argument("-c", "--currency", default="EUR")
     p.add_argument(
+        "--browser", action="store_true",
+        help="search in a headless Chromium right away; by default it is used only when "
+        "Google refuses plain requests or cuts their results short",
+    )
+    p.add_argument(
         "-n", "--limit", type=int, default=20, help="rows to print, 0 for all (default: 20)"
     )
     p.add_argument("--json", action="store_true", help="print every result as JSON")
@@ -130,18 +142,43 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(f"flights: no {what} row {row}; there are {len(rows)}")
         return rows[row - 1]
 
-    try:
-        results = get_flights(query())
-        # Google lists a round trip's return flights only once an outbound is picked.
-        if args.outbound:
-            legs[0].selected_flights = pick(_by_price(results), args.outbound, "outbound").flights
-            results = get_flights(query())
-        if args.book:
-            booking = pick(_by_price(results), args.book, "result")
-            legs[-1].selected_flights = booking.flights
-            options = get_booking_options(query(), booking.booking_token)
-    except Exception as e:
-        sys.exit(f"flights: {e}")
+    with ExitStack() as stack:
+        browser: Browser | None = None
+
+        def browse() -> Browser:
+            nonlocal browser
+            browser = browser or stack.enter_context(Browser())
+            return browser
+
+        def fetch(plain: Callable[[], T], in_browser: Callable[[Browser], T]) -> T:
+            # Plain requests are fastest; when Google refuses them, its web app still gets through.
+            if not args.browser:
+                try:
+                    result = plain()
+                    if getattr(result, "complete", True):
+                        return result
+                except Exception:
+                    pass
+            return in_browser(browse())
+
+        def search() -> ResultList:
+            return fetch(lambda: get_flights(query()), lambda b: b.get_flights(query()))
+
+        try:
+            results = search()
+            # Google lists a round trip's return flights only once an outbound is picked.
+            if args.outbound:
+                legs[0].selected_flights = pick(_by_price(results), args.outbound, "outbound").flights
+                results = search()
+            if args.book:
+                booking = pick(_by_price(results), args.book, "result")
+                legs[-1].selected_flights = booking.flights
+                options = fetch(
+                    lambda: get_booking_options(query(), booking.booking_token),
+                    lambda b: b.get_booking_options(query()),
+                )
+        except Exception as e:
+            sys.exit(f"flights: {e}")
     if args.book:
         if args.json:
             print(json.dumps([asdict(o) for o in options], indent=2))
