@@ -1,6 +1,8 @@
 """Synthetic CLI tests; no live requests or browser."""
 
+import base64
 import io
+import json
 import platform
 import unittest
 from contextlib import redirect_stdout
@@ -8,8 +10,8 @@ from unittest.mock import patch
 
 from fast_flights.browser import URL, _as_chrome, _Load
 from fast_flights.cli import _dates, main
-from fast_flights.parser import ResultList
-from test_result_groups import itinerary, parse_groups
+from fast_flights.parser import ResultList, parse_payload
+from test_result_groups import itinerary, parse_groups, results_chunk
 
 
 class FakeBrowser:
@@ -93,9 +95,6 @@ class FakePage:
     def __init__(self, url):
         self.url, self.calls = url, []
 
-    def on(self, *_):
-        pass
-
     def goto(self, url, **_):
         self.calls.append("goto")
 
@@ -103,15 +102,57 @@ class FakePage:
         self.calls.append("pushState")
 
 
+class FakeSession:
+    """A page's CDP session; `buffered` is what the response streamed before being asked."""
+
+    def __init__(self, buffered=b""):
+        self.buffered = buffered
+
+    def on(self, *_):
+        pass
+
+    def send(self, method, params=None):
+        return {"bufferedData": base64.b64encode(self.buffered).decode()}
+
+
+def streamed(load, *lines, close=False):
+    """Feed `lines` to `load`'s GetShoppingResults request, starting it on the first call."""
+    if "1" not in load.bodies:
+        load._sent({"requestId": "1", "request": {"url": "https://www.google.com/x/GetShoppingResults?f"}})
+        load._received({"requestId": "1", "response": {"status": 200}})
+    for line in lines:
+        load._data({"requestId": "1", "data": base64.b64encode(f"{len(line)}\n{line}\n".encode()).decode()})
+    if close:
+        load._closed({"requestId": "1"})
+
+
 class LoadTests(unittest.TestCase):
+    def load(self):
+        return _Load(FakePage("about:blank"), FakeSession(b")]}'\n\n"), URL, "GetShoppingResults", 0)
+
     def test_a_loaded_web_app_searches_again_without_reloading(self):
         for start, method, calls in ((URL + "/search?tfs=X", "GetShoppingResults", ["pushState"]),
                                      ("about:blank", "GetShoppingResults", ["goto"]),
                                      (URL + "/search?tfs=X", "GetBookingResults", ["goto"])):
             with self.subTest(start=start, method=method):
                 page = FakePage(start)
-                _Load(page, URL + "/search?tfs=Y", method, 0)
+                _Load(page, FakeSession(), URL + "/search?tfs=Y", method, 0)
                 self.assertEqual(page.calls, calls)
+
+    def test_done_at_the_finished_snapshot_while_the_response_stays_open(self):
+        # Google keeps a search's response open long after its finished snapshot, and
+        # streams small updates without results in between.
+        load = self.load()
+        streamed(load, results_chunk(100, done=False))
+        self.assertIsNone(load.poll())
+        small = json.dumps([["wrb.fr", None, json.dumps([None] * 31 + [True])]])
+        streamed(load, results_chunk(100, 90), small)
+        self.assertEqual([f.price for f in parse_payload(load.poll())], [100, 90])
+
+    def test_an_unfinished_search_waits(self):
+        load = self.load()
+        streamed(load, results_chunk(100, done=False), close=True)
+        self.assertIsNone(load.poll())
 
 
 class FakeCDP:

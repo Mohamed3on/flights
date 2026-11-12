@@ -10,6 +10,7 @@ once, and a loaded page searches again without reloading, so a grid of 40
 searches takes about 30 s.
 """
 
+import base64
 import platform
 import re
 import subprocess
@@ -102,8 +103,9 @@ class Browser:
         """Load each URL in one of `jobs` pages and return the payload of its `method` response."""
         while len(self._pages) < min(jobs, len(urls)):
             page = self._context.new_page()
-            _as_chrome(page, self._browser.version)
-            self._pages.append(page)
+            cdp = _as_chrome(page, self._browser.version)
+            cdp.send("Network.enable")
+            self._pages.append((page, cdp))
         payloads: list[list | Exception | None] = [None] * len(urls)
         todo = list(enumerate(urls))[::-1]
         idle = self._pages[:jobs]
@@ -112,9 +114,9 @@ class Browser:
             while todo or loading:
                 while todo and idle:
                     i, url = todo.pop()
-                    loading.append(_Load(idle.pop(), url, method, i))
-                # Waiting on one page lets Playwright deliver every page's responses.
-                self._pages[0].wait_for_timeout(100)
+                    loading.append(_Load(*idle.pop(), url, method, i))
+                # Waiting on one page lets Playwright deliver every page's events.
+                self._pages[0][0].wait_for_timeout(100)
                 for load in loading[:]:
                     try:
                         payload = load.poll()
@@ -124,7 +126,7 @@ class Browser:
                         payloads[load.index] = payload
                         load.stop()
                         loading.remove(load)
-                        idle.append(load.page)
+                        idle.append((load.page, load.cdp))
         finally:
             for load in loading:
                 load.stop()
@@ -132,21 +134,32 @@ class Browser:
 
 
 class _Load:
-    """One page loading `url` until the page's `method` response is done, reloading if refused."""
+    """One page loading `url` until the page's `method` response is done, reloading if refused.
 
-    def __init__(self, page, url: str, method: str, index: int) -> None:
-        self.page, self.url, self.method, self.index = page, url, method, index
-        self.responses: list = []
+    It reads the response as it streams in: Google sends a search's finished results
+    seconds before it closes the response, often 15–25 s before.
+    """
+
+    def __init__(self, page, cdp, url: str, method: str, index: int) -> None:
+        self.page, self.cdp, self.url, self.method, self.index = page, cdp, url, method, index
         self.tries = 0
-        # Only finished requests: reading a streaming response would block every other page.
-        self._listener = lambda r: method in r.url and self.responses.append(r)  # noqa: E731
-        page.on("requestfinished", self._listener)
+        self._handlers = {
+            "Network.requestWillBeSent": self._sent,
+            "Network.responseReceived": self._received,
+            "Network.dataReceived": self._data,
+            "Network.loadingFinished": self._closed,
+            "Network.loadingFailed": self._closed,
+        }
+        for event, handler in self._handlers.items():
+            cdp.on(event, handler)
         self._start()
 
     def _start(self) -> None:
         # Even the web app is refused now and then; loading the page again usually works.
         self.tries += 1
-        self.responses.clear()
+        self.bodies: dict[str, bytes] = {}  # each `method` request's body so far
+        self.parsed: dict[str, int] = {}  # how much of it is parsed
+        self.closed: set[str] = set()
         self.payload = self.error = None
         self.status = 0
         self.deadline = time.monotonic() + TIMEOUT
@@ -161,16 +174,48 @@ class _Load:
         else:
             self.page.goto(self.url, wait_until="commit")
 
+    def _sent(self, event: dict) -> None:
+        if self.method in event["request"]["url"]:
+            self.bodies[event["requestId"]] = b""
+
+    def _received(self, event: dict) -> None:
+        if (request := event["requestId"]) in self.bodies:
+            self.status = event["response"]["status"]
+            try:
+                stream = self.cdp.send("Network.streamResourceContent", {"requestId": request})
+                self.bodies[request] += base64.b64decode(stream["bufferedData"])
+            except Exception:
+                pass  # already loaded: `poll` reads it whole
+
+    def _data(self, event: dict) -> None:
+        if event["requestId"] in self.bodies and event.get("data"):
+            self.bodies[event["requestId"]] += base64.b64decode(event["data"])
+
+    def _closed(self, event: dict) -> None:
+        if event["requestId"] in self.bodies:
+            self.closed.add(event["requestId"])
+
     def poll(self) -> list | None:
         """The payload once it is done, None while it isn't; raises when the page gave up."""
-        while self.responses and self.error is None:
-            response = self.responses.pop(0).response()
-            last, self.error = _last_payload(response.text())
-            self.status = response.status
-            self.payload = last or self.payload
+        for request, body in self.bodies.items():
+            if request in self.closed and not body:
+                body = self.bodies[request] = self._whole(request)
+            # Parse the new whole lines: each "wrb.fr" chunk is one line, a fuller snapshot.
+            start, end = self.parsed.get(request, 0), body.rfind(b"\n") + 1
+            if request in self.closed:
+                end = len(body)
+            self.parsed[request] = max(start, end)
+            for line in body[start:end].decode().splitlines():
+                last, error = _last_payload(line)
+                self.error = error if error is not None else self.error
+                # A search also streams small updates, without results, between its snapshots.
+                if last is not None and (self.method != "GetShoppingResults" or _has_results(last)):
+                    self.payload = last
             # A booking page asks once; a search streams until it is finished.
-            if last is not None and (self.method != "GetShoppingResults" or _finished(last)):
-                return last
+            if self.payload is not None and (
+                _finished(self.payload) if self.method == "GetShoppingResults" else request in self.closed
+            ):
+                return self.payload
         if self.error is None and time.monotonic() < self.deadline:
             return None
         if self.payload is not None:
@@ -182,12 +227,21 @@ class _Load:
             raise _rpc_failure(self.error, self.status)
         raise FlightsNotFound(f"Google Flights' page sent no {self.method} request in {TIMEOUT} s")
 
+    def _whole(self, request: str) -> bytes:
+        try:
+            body = self.cdp.send("Network.getResponseBody", {"requestId": request})
+        except Exception:
+            return b""
+        return base64.b64decode(body["body"]) if body["base64Encoded"] else body["body"].encode()
+
     def stop(self) -> None:
-        self.page.remove_listener("requestfinished", self._listener)
+        for event, handler in self._handlers.items():
+            self.cdp.remove_listener(event, handler)
 
 
-def _as_chrome(page, version: str) -> None:
-    """Make `page` present itself as this machine's Google Chrome, in its user agent and client hints."""
+def _as_chrome(page, version: str):
+    """Make `page` present itself as this machine's Google Chrome, in its user agent and client
+    hints; returns the page's CDP session."""
     cdp = page.context.new_cdp_session(page)
     user_agent = cdp.send("Browser.getVersion")["userAgent"].replace("HeadlessChrome", "Chrome")
     os_name, os_version = {
@@ -213,6 +267,7 @@ def _as_chrome(page, version: str) -> None:
             },
         },
     )
+    return cdp
 
 
 def _raised(result):
@@ -225,6 +280,10 @@ def _results(payload: list) -> ResultList:
     flights = parse_payload(payload)
     flights.complete = _finished(payload)
     return flights
+
+
+def _has_results(payload: list) -> bool:
+    return len(payload) > 7 and bool(payload[7])
 
 
 def _finished(payload: list) -> bool:
