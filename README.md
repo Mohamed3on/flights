@@ -26,7 +26,7 @@ $ pip install fast-flights
 > **This fork** tracks upstream `dev` and adds:
 > - a consent cookie, so searches from EU/EEA IPs return flights instead of Google's consent page
 > - every result, streamed the way the web client does: the page itself carries only the first few Google finds, and none for slow searches (multi-city, several passengers, some long-haul routes)
-> - a `flights` command: `flights BER LHR 2026-11-15`, `flights BER LON 2026-11-20 -r 2026-11-27` (add `-o 1` for the return flights that go with outbound row 1, then `-b 1` for the live booking options of return row 1: each seller and fare, and whether it includes a checked bag), multi-city with `--leg DAD BER 2027-03-20`, `--children`/`--infants-lap`/`--infants-seat`, and `--carry-on` to include carry-on bag fees (see `flights -h`)
+> - a `flights` command: `flights BER LHR 2026-11-15`, `flights BER LON 2026-11-20 -r 2026-11-27` (add `-o 1` for the return flights that go with outbound row 1, then `-b 1` for the live booking options of return row 1: each seller and fare, and whether it includes a checked bag), a grid of the cheapest price per date pair with ranges or lists (`flights BER BKK 2026-12-11..2026-12-16 -r 2027-03-17,2027-03-24`, searched 6 at a time in one browser; filter with `--airline SWISS` and `--max-hours 18`), multi-city with `--leg DAD BER 2027-03-20`, `--children`/`--infants-lap`/`--infants-seat`, and `--carry-on` to include carry-on bag fees (see `flights -h`)
 >
 > Install the CLI with `uv tool install git+https://github.com/Mohamed3on/flights`, or the library with `pip install git+https://github.com/Mohamed3on/flights`.
 

@@ -5,11 +5,13 @@ answers with fewer, pricier itineraries and booking options without fare names.
 The web app's own requests carry an `x-goog-batchexecute-bgr` header, a BotGuard
 token minted in the page for that very request, so this loads the results or
 booking page and reads the page's own GetShoppingResults or GetBookingResults
-response. Slower than plain requests (about 3–7 s a page), but it gets what
-Chrome gets.
+response. About 3–4 s a search, but it gets what Chrome gets; several pages search at
+once, and a loaded page searches again without reloading, so a grid of 40
+searches takes about 30 s.
 """
 
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -29,6 +31,9 @@ from .parser import ResultList, parse_booking_options, parse_payload
 from .querying import Query
 
 TIMEOUT = 60
+JOBS = 6
+# Pictures, fonts and media only slow the page down: the results come as data.
+MEDIA = re.compile(r"\.(png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|mp4|webm)(\?|$)")
 
 
 class Browser:
@@ -55,12 +60,12 @@ class Browser:
                 print("flights: installing Playwright's Chromium (once)…", file=sys.stderr)
                 subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
                 self._browser = launch()
-            context = self._browser.new_context(locale="en-US")
-            context.add_cookies(
+            self._context = self._browser.new_context(locale="en-US")
+            self._context.add_cookies(
                 [{"name": "SOCS", "value": CONSENT_COOKIE, "domain": ".google.com", "path": "/"}]
             )
-            self._page = context.new_page()
-            _as_chrome(self._page, self._browser.version)
+            self._context.route(MEDIA, lambda route: route.abort())
+            self._pages = []
         except BaseException:
             self.close()
             raise
@@ -78,47 +83,107 @@ class Browser:
 
     def get_flights(self, q: Query) -> ResultList:
         """Search like `fetcher.get_flights`, with the browser's full results."""
-        payload = self._page_payload(f"{URL}/search?{urlencode(q.params())}", "GetShoppingResults")
-        flights = parse_payload(payload)
-        flights.complete = _finished(payload)
-        return flights
+        return _raised(self.search_many([q])[0])
+
+    def search_many(self, queries: list[Query], jobs: int = JOBS) -> list[ResultList | Exception]:
+        """Run the searches `jobs` pages at a time; each gives its results or its error."""
+        urls = [f"{URL}/search?{urlencode(q.params())}" for q in queries]
+        return [
+            p if isinstance(p, Exception) else _results(p)
+            for p in self._payloads(urls, "GetShoppingResults", jobs)
+        ]
 
     def get_booking_options(self, q: Query) -> list[BookingOption]:
         """List the booking options like `fetcher.get_booking_options`; the page needs no token."""
-        payload = self._page_payload(f"{BOOKING_URL}?{urlencode(q.params())}", "GetBookingResults")
-        return parse_booking_options(payload)
+        url = f"{BOOKING_URL}?{urlencode(q.params())}"
+        return parse_booking_options(_raised(self._payloads([url], "GetBookingResults", 1)[0]))
 
-    def _page_payload(self, url: str, method: str) -> list:
-        """Load `url` and return the payload of the page's last `method` response."""
-
-        responses = []
-        listener = lambda r: method in r.url and responses.append(r)  # noqa: E731
-        self._page.on("response", listener)
+    def _payloads(self, urls: list[str], method: str, jobs: int) -> list[list | Exception]:
+        """Load each URL in one of `jobs` pages and return the payload of its `method` response."""
+        while len(self._pages) < min(jobs, len(urls)):
+            page = self._context.new_page()
+            _as_chrome(page, self._browser.version)
+            self._pages.append(page)
+        payloads: list[list | Exception | None] = [None] * len(urls)
+        todo = list(enumerate(urls))[::-1]
+        idle = self._pages[:jobs]
+        loading: list[_Load] = []
         try:
-            # Even the web app is refused now and then; loading the page again usually works.
-            for _ in range(FOLLOW_UP_TRIES):
-                responses.clear()
-                self._page.goto(url, wait_until="commit")
-                deadline = time.monotonic() + TIMEOUT
-                payload = error = None
-                status = 0
-                while time.monotonic() < deadline and error is None:
-                    self._page.wait_for_timeout(200)
-                    while responses:
-                        response = responses.pop(0)
-                        last, error = _last_payload(response.text())
-                        status = response.status
-                        payload = last or payload
-                        # A booking page asks once; a search streams until it is finished.
-                        if last is not None and (method != "GetShoppingResults" or _finished(last)):
-                            return last
-                if payload is not None:
-                    return payload
-            if error is not None or status:
-                raise _rpc_failure(error, status)
-            raise FlightsNotFound(f"Google Flights' page sent no {method} request in {TIMEOUT} s")
+            while todo or loading:
+                while todo and idle:
+                    i, url = todo.pop()
+                    loading.append(_Load(idle.pop(), url, method, i))
+                # Waiting on one page lets Playwright deliver every page's responses.
+                self._pages[0].wait_for_timeout(100)
+                for load in loading[:]:
+                    try:
+                        payload = load.poll()
+                    except Exception as e:
+                        payload = e
+                    if payload is not None:
+                        payloads[load.index] = payload
+                        load.stop()
+                        loading.remove(load)
+                        idle.append(load.page)
         finally:
-            self._page.remove_listener("response", listener)
+            for load in loading:
+                load.stop()
+        return payloads
+
+
+class _Load:
+    """One page loading `url` until the page's `method` response is done, reloading if refused."""
+
+    def __init__(self, page, url: str, method: str, index: int) -> None:
+        self.page, self.url, self.method, self.index = page, url, method, index
+        self.responses: list = []
+        self.tries = 0
+        # Only finished requests: reading a streaming response would block every other page.
+        self._listener = lambda r: method in r.url and self.responses.append(r)  # noqa: E731
+        page.on("requestfinished", self._listener)
+        self._start()
+
+    def _start(self) -> None:
+        # Even the web app is refused now and then; loading the page again usually works.
+        self.tries += 1
+        self.responses.clear()
+        self.payload = self.error = None
+        self.status = 0
+        self.deadline = time.monotonic() + TIMEOUT
+        reusable = self.method == "GetShoppingResults" and self.page.url.startswith(f"{URL}/search")
+        if self.tries == 1 and reusable:
+            # The loaded web app searches again when its URL changes, which spares the
+            # page load: most of a search's time, and of the CPU that limits parallel pages.
+            self.page.evaluate(
+                "url => { history.pushState({}, '', url); dispatchEvent(new PopStateEvent('popstate')) }",
+                self.url,
+            )
+        else:
+            self.page.goto(self.url, wait_until="commit")
+
+    def poll(self) -> list | None:
+        """The payload once it is done, None while it isn't; raises when the page gave up."""
+        while self.responses and self.error is None:
+            response = self.responses.pop(0).response()
+            last, self.error = _last_payload(response.text())
+            self.status = response.status
+            self.payload = last or self.payload
+            # A booking page asks once; a search streams until it is finished.
+            if last is not None and (self.method != "GetShoppingResults" or _finished(last)):
+                return last
+        if self.error is None and time.monotonic() < self.deadline:
+            return None
+        if self.payload is not None:
+            return self.payload
+        if self.tries < FOLLOW_UP_TRIES:
+            self._start()
+            return None
+        if self.error is not None or self.status:
+            raise _rpc_failure(self.error, self.status)
+        raise FlightsNotFound(f"Google Flights' page sent no {self.method} request in {TIMEOUT} s")
+
+    def stop(self) -> None:
+        self.page.remove_listener("requestfinished", self._listener)
 
 
 def _as_chrome(page, version: str) -> None:
@@ -148,6 +213,18 @@ def _as_chrome(page, version: str) -> None:
             },
         },
     )
+
+
+def _raised(result):
+    if isinstance(result, Exception):
+        raise result
+    return result
+
+
+def _results(payload: list) -> ResultList:
+    flights = parse_payload(payload)
+    flights.complete = _finished(payload)
+    return flights
 
 
 def _finished(payload: list) -> bool:
