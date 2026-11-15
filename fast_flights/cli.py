@@ -160,6 +160,10 @@ def main(argv: list[str] | None = None) -> None:
         airline = args.airline is None or args.airline.lower() in (a.lower() for a in f.airlines)
         return airline and (args.max_hours is None or _minutes(f) <= args.max_hours * 60)
 
+    def shown(results: list[Flights]) -> list[Flights]:
+        """The rows as printed, which --outbound and --book number."""
+        return _by_price([f for f in results if wanted(f)])
+
     legs = trip(dates[0], returns[0])
 
     def query(legs: list[FlightQuery] = legs) -> Query:
@@ -220,10 +224,10 @@ def main(argv: list[str] | None = None) -> None:
             results = search()
             # Google lists a round trip's return flights only once an outbound is picked.
             if args.outbound:
-                legs[0].selected_flights = pick(_by_price(results), args.outbound, "outbound").flights
+                legs[0].selected_flights = pick(shown(results), args.outbound, "outbound").flights
                 results = search()
             if args.book:
-                booking = pick(_by_price(results), args.book, "result")
+                booking = pick(shown(results), args.book, "result")
                 legs[-1].selected_flights = booking.flights
                 options = fetch(
                     lambda: get_booking_options(query(), booking.booking_token),
@@ -247,7 +251,7 @@ def main(argv: list[str] | None = None) -> None:
             file=sys.stderr,
         )
 
-    results = _by_price([f for f in results if wanted(f)])
+    results = shown(results)
     if args.json:
         print(json.dumps([asdict(f) for f in results], indent=2))
         return
